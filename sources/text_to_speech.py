@@ -39,6 +39,11 @@ class Speech():
         self.speed = 1.2
         self.voice_folder = ".voices"
         self.create_voice_folder(self.voice_folder)
+
+        # MVP 語音增強功能
+        self.mvp_enhancer = self._create_mvp_enhancer()
+        self.auto_language_detect = True
+        self.enhanced_mode = True
     
     def create_voice_folder(self, path: str = ".voices") -> None:
         """
@@ -49,9 +54,59 @@ class Speech():
         if not os.path.exists(path):
             os.makedirs(path)
 
+    def _create_mvp_enhancer(self):
+        """創建 MVP 語音增強器"""
+        class SimpleMVPEnhancer:
+            def detect_language(self, text: str) -> str:
+                import re
+                chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+                total_chars = len(re.sub(r'\s', '', text))
+                if total_chars == 0:
+                    return "en"
+                chinese_ratio = chinese_chars / total_chars
+                return "zh" if chinese_ratio > 0.3 else "en"
+
+            def enhance_text_for_speech(self, text: str, language: str) -> str:
+                if not text:
+                    return ""
+                enhanced = text.strip()
+                enhanced = re.sub(r'```.*?```', '', enhanced, flags=re.DOTALL)
+                enhanced = re.sub(r'`[^`]*`', '', enhanced)
+                enhanced = re.sub(r'https?://\S+', '', enhanced)
+                enhanced = re.sub(r'\[.*?\]', '', enhanced)
+
+                if language == "zh":
+                    enhanced = re.sub(r'[^\u4e00-\u9fff\s，。！？；：""''（）]', '', enhanced)
+                    enhanced = re.sub(r'\s+', '', enhanced)
+                else:
+                    enhanced = re.sub(r'[^a-zA-Z0-9\s,.!?;:\'"()-]', ' ', enhanced)
+                    enhanced = re.sub(r'\s+', ' ', enhanced)
+
+                if len(enhanced) > 500:
+                    sentences = re.split(r'[.!?。！？]', enhanced)
+                    enhanced = '. '.join(sentences[:3]) + '.'
+
+                return enhanced.strip()
+
+            def optimize_voice_parameters(self, text: str, language: str) -> dict:
+                base_speed = 1.2
+                text_length = len(text)
+                if text_length > 200:
+                    base_speed *= 0.9
+                elif text_length < 50:
+                    base_speed *= 1.1
+
+                if language == "zh":
+                    base_speed *= 0.95
+
+                return {"speed": base_speed}
+
+        return SimpleMVPEnhancer()
+
     def speak(self, sentence: str, voice_idx: int = 1):
         """
         Convert text to speech using an AI model and play the audio.
+        Enhanced with MVP voice optimization.
 
         Args:
             sentence (str): The text to convert to speech. Will be pre-processed.
@@ -59,12 +114,46 @@ class Speech():
         """
         if not self.pipeline:
             return
+
+        # MVP 增強處理
+        if self.enhanced_mode and self.mvp_enhancer:
+            # 自動語言檢測
+            if self.auto_language_detect:
+                detected_lang = self.mvp_enhancer.detect_language(sentence)
+                if detected_lang != self.language and detected_lang in self.lang_map:
+                    pretty_print(f"🌐 Auto-detected language: {detected_lang}", color="info")
+                    # 動態切換語言
+                    self.language = detected_lang
+                    self.pipeline = KPipeline(lang_code=self.lang_map[detected_lang])
+
+            # 文本增強
+            enhanced_sentence = self.mvp_enhancer.enhance_text_for_speech(sentence, self.language)
+            if enhanced_sentence != sentence:
+                pretty_print(f"✨ Text enhanced for better speech", color="info")
+            sentence = enhanced_sentence if enhanced_sentence else sentence
+
+            # 語音參數優化
+            voice_params = self.mvp_enhancer.optimize_voice_parameters(sentence, self.language)
+            optimized_speed = voice_params.get("speed", self.speed)
+            if abs(optimized_speed - self.speed) > 0.05:
+                pretty_print(f"⚡ Speed optimized: {self.speed:.2f} -> {optimized_speed:.2f}", color="info")
+                self.speed = optimized_speed
+
+        # 原有邏輯
         if voice_idx >= len(self.voice_map[self.language]):
             pretty_print("Invalid voice number, using default voice", color="error")
             voice_idx = 0
-        sentence = self.clean_sentence(sentence)
+
+        # 使用增強的清理方法或原有方法
+        if self.enhanced_mode:
+            # 已經在上面增強過了
+            pass
+        else:
+            sentence = self.clean_sentence(sentence)
+
         audio_file = f"{self.voice_folder}/sample_{self.voice_map[self.language][voice_idx]}.wav"
         self.voice = self.voice_map[self.language][voice_idx]
+
         generator = self.pipeline(
             sentence, voice=self.voice,
             speed=self.speed, split_pattern=r'\n+'

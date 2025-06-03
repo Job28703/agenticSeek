@@ -21,7 +21,7 @@ from sources.browser import Browser, create_driver
 from sources.utility import pretty_print
 from sources.logger import Logger
 from sources.schemas import QueryRequest, QueryResponse
-
+from config_validator import validate_startup_config
 
 from celery import Celery
 
@@ -50,10 +50,10 @@ def initialize_system():
     languages = config["MAIN"]["languages"].split(' ')
 
     provider = Provider(
-        provider_name=config["MAIN"]["provider_name"],
-        model=config["MAIN"]["provider_model"],
-        server_address=config["MAIN"]["provider_server_address"],
-        is_local=config.getboolean('MAIN', 'is_local')
+        provider_name=config["LLM"]["provider"],
+        model=config["LLM"]["model"],
+        server_address=config["LLM"]["server_address"],
+        is_local=config.getboolean('LLM', 'is_local')
     )
     logger.info(f"Provider initialized: {provider.provider_name} ({provider.model})")
 
@@ -102,9 +102,49 @@ def initialize_system():
     logger.info("Interaction initialized")
     return interaction
 
+# Validate configuration before starting
+print("🚀 Starting AgenticSeek...")
+if not validate_startup_config():
+    print("❌ Configuration validation failed. Exiting.")
+    sys.exit(1)
+
+# Initialize system and global variables
+start_time = time.time()  # Track startup time for health check
+print("✅ Configuration validated. Initializing system...")
 interaction = initialize_system()
+print("✅ AgenticSeek is ready!")
 is_generating = False
 query_resp_history = []
+
+# Graceful shutdown handler
+import signal
+
+def signal_handler(signum, frame):
+    """Handle graceful shutdown on SIGTERM/SIGINT"""
+    logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+    
+    # Stop any running agents
+    if interaction and interaction.current_agent:
+        try:
+            interaction.current_agent.request_stop()
+            logger.info("Stopped current agent")
+        except Exception as e:
+            logger.error(f"Error stopping agent: {e}")
+    
+    # Close browser if exists
+    if interaction and hasattr(interaction, 'browser') and interaction.browser:
+        try:
+            interaction.browser.quit()
+            logger.info("Closed browser")
+        except Exception as e:
+            logger.error(f"Error closing browser: {e}")
+    
+    logger.info("Graceful shutdown completed")
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
 
 @api.get("/screenshot")
 async def get_screenshot():
@@ -120,8 +160,46 @@ async def get_screenshot():
 
 @api.get("/health")
 async def health_check():
-    logger.info("Health check endpoint called")
-    return {"status": "healthy", "version": "0.1.0"}
+    """Enhanced health check with detailed system status"""
+    try:
+        logger.info("Health check endpoint called")
+        
+        # Check system components
+        system_status = {
+            "status": "healthy",
+            "version": "0.1.0",
+            "timestamp": time.time(),
+            "components": {
+                "interaction": interaction is not None,
+                "agents": len(interaction.agents) if interaction else 0,
+                "browser": hasattr(interaction, 'browser') and interaction.browser is not None if interaction else False,
+                "query_history_count": len(query_resp_history),
+                "is_generating": is_generating,
+                "screenshots_dir": os.path.exists(".screenshots")
+            },
+            "uptime_seconds": time.time() - start_time if 'start_time' in globals() else 0
+        }
+        
+        # Check if any critical component is missing
+        critical_issues = []
+        if not system_status["components"]["interaction"]:
+            critical_issues.append("Interaction system not initialized")
+        if system_status["components"]["agents"] == 0:
+            critical_issues.append("No agents available")
+            
+        if critical_issues:
+            system_status["status"] = "degraded"
+            system_status["issues"] = critical_issues
+            
+        return JSONResponse(status_code=200, content=system_status)
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return JSONResponse(status_code=503, content={
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": time.time()
+        })
 
 @api.get("/is_active")
 async def is_active():
@@ -245,6 +323,30 @@ async def process_query(request: QueryRequest):
         logger.info("Processing finished")
         if config.getboolean('MAIN', 'save_session'):
             interaction.save_session()
+
+@api.get("/latest_answer")
+async def get_latest_answer():
+    """Get the latest answer from query history with enhanced error handling"""
+    try:
+        logger.info("Fetching latest answer from history")
+        if query_resp_history and len(query_resp_history) > 0:
+            latest = query_resp_history[-1]
+            logger.info(f"Returning latest answer with UID: {latest.get('uid', 'unknown')}")
+            return JSONResponse(status_code=200, content=latest)
+        else:
+            logger.warning("No answers available in query history")
+            return JSONResponse(status_code=404, content={
+                "error": "No answers available",
+                "message": "Query history is empty. Please submit a query first.",
+                "timestamp": time.time()
+            })
+    except Exception as e:
+        logger.error(f"Error fetching latest answer: {str(e)}")
+        return JSONResponse(status_code=500, content={
+            "error": "Internal server error",
+            "message": "Failed to fetch latest answer",
+            "timestamp": time.time()
+        })
 
 if __name__ == "__main__":
     uvicorn.run(api, host="0.0.0.0", port=8000)

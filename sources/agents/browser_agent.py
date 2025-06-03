@@ -42,11 +42,210 @@ class BrowserAgent(Agent):
                         recover_last_session=False, # session recovery in handled by the interaction class
                         memory_compression=False,
                         model_provider=provider.get_model_name())
+
+        # Enhanced browser capabilities
+        self.tabs = {}  # Tab management
+        self.tab_counter = 0
+        self.current_tab = None
+        self.form_analysis_cache = {}  # Cache form analysis results
     
     def get_today_date(self) -> str:
         """Get the date"""
         date_time = date.today()
         return date_time.strftime("%B %d, %Y")
+
+    def create_new_tab(self, url: str = "about:blank") -> str:
+        """
+        Create a new browser tab (enhanced functionality).
+
+        Args:
+            url: URL to open in the new tab
+
+        Returns:
+            str: Tab ID
+        """
+        self.tab_counter += 1
+        tab_id = f"tab_{self.tab_counter}"
+
+        self.tabs[tab_id] = {
+            "url": url,
+            "title": f"Tab {self.tab_counter}",
+            "is_active": True,
+            "history": [],
+            "notes": []
+        }
+
+        # Set other tabs as inactive
+        for tab in self.tabs.values():
+            if tab != self.tabs[tab_id]:
+                tab["is_active"] = False
+
+        self.current_tab = tab_id
+        pretty_print(f"📂 Created new tab: {tab_id} ({url})", color="info")
+        return tab_id
+
+    def switch_to_tab(self, tab_id: str) -> bool:
+        """
+        Switch to a specific tab.
+
+        Args:
+            tab_id: Tab ID to switch to
+
+        Returns:
+            bool: Success status
+        """
+        if tab_id not in self.tabs:
+            return False
+
+        # Set all tabs as inactive
+        for tab in self.tabs.values():
+            tab["is_active"] = False
+
+        # Activate target tab
+        self.tabs[tab_id]["is_active"] = True
+        self.current_tab = tab_id
+
+        pretty_print(f"🔄 Switched to tab: {tab_id}", color="info")
+        return True
+
+    def analyze_form_fields_enhanced(self, page_content: str = None) -> Dict:
+        """
+        Enhanced form field analysis with smart suggestions.
+
+        Args:
+            page_content: HTML content to analyze (optional)
+
+        Returns:
+            Dict: Analysis results with field suggestions
+        """
+        if page_content is None:
+            page_content = self.browser.get_page_source() if self.browser else ""
+
+        # Cache check
+        content_hash = hash(page_content)
+        if content_hash in self.form_analysis_cache:
+            return self.form_analysis_cache[content_hash]
+
+        analysis = {
+            "fields": [],
+            "suggestions": {},
+            "form_count": 0,
+            "complexity": "simple"
+        }
+
+        # Simple form field detection
+        import re
+
+        # Find input fields
+        input_pattern = r'<input[^>]*name=["\']([^"\']*)["\'][^>]*>'
+        input_matches = re.findall(input_pattern, page_content, re.IGNORECASE)
+
+        for field_name in input_matches:
+            field_name_lower = field_name.lower()
+
+            # Generate smart suggestions based on field name
+            if 'email' in field_name_lower:
+                suggestion = "user@example.com"
+            elif 'name' in field_name_lower:
+                if 'first' in field_name_lower:
+                    suggestion = "John"
+                elif 'last' in field_name_lower:
+                    suggestion = "Doe"
+                else:
+                    suggestion = "John Doe"
+            elif 'phone' in field_name_lower:
+                suggestion = "+1-555-0123"
+            elif 'password' in field_name_lower:
+                suggestion = "SecurePass123!"
+            elif 'age' in field_name_lower:
+                suggestion = "25"
+            elif 'address' in field_name_lower:
+                suggestion = "123 Main St"
+            elif 'city' in field_name_lower:
+                suggestion = "New York"
+            elif 'country' in field_name_lower:
+                suggestion = "USA"
+            else:
+                suggestion = "sample_value"
+
+            analysis["fields"].append(field_name)
+            analysis["suggestions"][field_name] = suggestion
+
+        # Count forms
+        form_count = len(re.findall(r'<form[^>]*>', page_content, re.IGNORECASE))
+        analysis["form_count"] = form_count
+
+        # Determine complexity
+        if len(analysis["fields"]) > 5 or form_count > 1:
+            analysis["complexity"] = "complex"
+        elif len(analysis["fields"]) > 2:
+            analysis["complexity"] = "medium"
+
+        # Cache the result
+        self.form_analysis_cache[content_hash] = analysis
+
+        if analysis["fields"]:
+            pretty_print(f"📝 Analyzed form: {len(analysis['fields'])} fields, {form_count} forms", color="info")
+
+        return analysis
+
+    def extract_page_content_enhanced(self, page_content: str = None) -> Dict:
+        """
+        Enhanced page content extraction with better parsing.
+
+        Args:
+            page_content: HTML content to extract from
+
+        Returns:
+            Dict: Extracted content information
+        """
+        if page_content is None:
+            page_content = self.browser.get_page_source() if self.browser else ""
+
+        import re
+
+        content = {
+            "title": "",
+            "headings": [],
+            "links": [],
+            "text_content": "",
+            "forms_count": 0,
+            "images_count": 0,
+            "key_elements": []
+        }
+
+        # Extract title
+        title_match = re.search(r'<title[^>]*>([^<]*)</title>', page_content, re.IGNORECASE)
+        if title_match:
+            content["title"] = title_match.group(1).strip()
+
+        # Extract headings
+        heading_pattern = r'<h[1-6][^>]*>([^<]*)</h[1-6]>'
+        headings = re.findall(heading_pattern, page_content, re.IGNORECASE)
+        content["headings"] = [h.strip() for h in headings if h.strip()]
+
+        # Extract links
+        link_pattern = r'<a[^>]*href=["\']([^"\']*)["\'][^>]*>([^<]*)</a>'
+        links = re.findall(link_pattern, page_content, re.IGNORECASE)
+        content["links"] = [{"url": url, "text": text.strip()} for url, text in links if text.strip()]
+
+        # Count forms and images
+        content["forms_count"] = len(re.findall(r'<form[^>]*>', page_content, re.IGNORECASE))
+        content["images_count"] = len(re.findall(r'<img[^>]*>', page_content, re.IGNORECASE))
+
+        # Extract key elements (buttons, important divs, etc.)
+        button_pattern = r'<button[^>]*>([^<]*)</button>'
+        buttons = re.findall(button_pattern, page_content, re.IGNORECASE)
+        content["key_elements"].extend([f"Button: {btn.strip()}" for btn in buttons if btn.strip()])
+
+        # Extract clean text content (simplified)
+        text_content = re.sub(r'<[^>]+>', '', page_content)
+        text_content = re.sub(r'\s+', ' ', text_content).strip()
+        content["text_content"] = text_content[:1000] + "..." if len(text_content) > 1000 else text_content
+
+        pretty_print(f"📄 Extracted content: {len(content['headings'])} headings, {len(content['links'])} links", color="info")
+
+        return content
 
     def extract_links(self, search_result: str) -> List[str]:
         """Extract all links from a sentence."""

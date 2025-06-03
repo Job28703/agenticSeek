@@ -1,0 +1,24 @@
+INFO:     Started server process [16226]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [16226]
+🚀 Starting AgenticSeek (Simplified Mode)...
+
+==================================================
+🔍 AgenticSeek Configuration Validation
+==================================================
+✅ Configuration validation PASSED
+
+⚠️  WARNINGS:
+  • Environment variable 'OPENAI_API_KEY' not set (OpenAI API key (if using OpenAI provider))
+  • Environment variable 'ANTHROPIC_API_KEY' not set (Anthropic API key (if using Anthropic provider))
+
+==================================================
+
+⚠️  Starting with warnings. Some features may not work properly.
+✅ Configuration validated. Initializing simplified system...
+✅ AgenticSeek (Simplified Mode) is ready!

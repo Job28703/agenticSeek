@@ -12,6 +12,7 @@ from sources.agents.code_agent import CoderAgent
 from sources.agents.casual_agent import CasualAgent
 from sources.agents.planner_agent import FileAgent
 from sources.agents.browser_agent import BrowserAgent
+from sources.agents.collaborative_agent import CollaborativeAgent, AgentTask, CollaborationMode
 from sources.language import LanguageUtility
 from sources.utility import pretty_print, animate_thinking, timer_decorator
 from sources.logger import Logger
@@ -30,6 +31,10 @@ class AgentRouter:
         self.learn_few_shots_tasks()
         self.learn_few_shots_complexity()
         self.asked_clarify = False
+
+        # 初始化協作代理管理器
+        agent_dict = {agent.role: agent for agent in agents}
+        self.collaborative_agent = CollaborativeAgent(agent_dict, max_parallel_tasks=3)
     
     def load_pipelines(self) -> Dict[str, Type[pipeline]]:
         """
@@ -440,35 +445,235 @@ class AgentRouter:
     
     def select_agent(self, text: str) -> Agent:
         """
-        Select the appropriate agent based on the text.
+        Enhanced agent selection with collaborative task detection.
         Args:
             text (str): The text to select the agent from
         Returns:
-            Agent: The selected agent
+            Agent: The selected agent or collaborative agent manager
         """
         assert len(self.agents) > 0, "No agents available."
         if len(self.agents) == 1:
             return self.agents[0]
+
+        # 檢測協作任務
+        if self.detect_collaborative_task(text):
+            pretty_print(f"🤝 Collaborative task detected, preparing multi-agent execution", color="info")
+            # 返回一個特殊的協作代理標識
+            class CollaborativeTaskAgent:
+                def __init__(self, router):
+                    self.router = router
+                    self.agent_name = "Collaborative Agent Manager"
+                    self.role = "collaborative"
+                    self.type = "collaborative_agent"
+
+                async def process(self, prompt, speech_module):
+                    return await self.router.execute_collaborative_task(prompt)
+
+            return CollaborativeTaskAgent(self)
+
         lang = self.lang_analysis.detect_language(text)
         text = self.find_first_sentence(text)
         text = self.lang_analysis.translate(text, lang)
         labels = [agent.role for agent in self.agents]
         complexity = self.estimate_complexity(text)
+
         if complexity == "HIGH":
             pretty_print(f"Complex task detected, routing to planner agent.", color="info")
             return self.find_planner_agent()
+
         try:
             best_agent = self.router_vote(text, labels, log_confidence=False)
         except Exception as e:
             raise e
+
         for agent in self.agents:
             if best_agent == agent.role:
                 role_name = agent.role
                 pretty_print(f"Selected agent: {agent.agent_name} (roles: {role_name})", color="warning")
                 return agent
+
         pretty_print(f"Error choosing agent.", color="failure")
         self.logger.error("No agent selected.")
         return None
+
+    def detect_collaborative_task(self, text: str) -> bool:
+        """
+        檢測是否為需要多代理協作的任務（使用 MVP 檢測器）
+
+        Args:
+            text: 用戶輸入文本
+
+        Returns:
+            bool: 是否需要協作
+        """
+        # 使用 MVP 協作檢測器
+        if not hasattr(self, '_mvp_detector'):
+            # 初始化 MVP 檢測器
+            self._mvp_detector = self._create_mvp_detector()
+
+        return self._mvp_detector.detect_collaborative_task(text)
+
+    def _create_mvp_detector(self):
+        """創建 MVP 協作檢測器"""
+        class MVPCollaborationDetector:
+            def __init__(self):
+                # 核心協作關鍵詞
+                self.collaboration_keywords = [
+                    "and then", "then", "after", "next", "followed by",
+                    "and also", "also", "and", "both", "simultaneously",
+                    "然後", "接著", "之後", "再", "先",
+                    "並且", "同時", "還要", "也要", "一起"
+                ]
+
+                # 動作詞
+                self.action_words = [
+                    "search", "find", "write", "create", "build", "make",
+                    "analyze", "download", "save", "send", "read", "process",
+                    "搜尋", "查找", "寫", "創建", "建立", "製作",
+                    "分析", "下載", "保存", "發送", "讀取", "處理"
+                ]
+
+                # 排除詞
+                self.exclusion_words = [
+                    "only", "just", "simply", "single", "alone",
+                    "只", "僅", "單純", "單獨", "獨自"
+                ]
+
+            def detect_collaborative_task(self, text: str) -> bool:
+                # 排除詞檢查
+                text_lower = text.lower()
+                for word in self.exclusion_words:
+                    if word in text_lower:
+                        return False
+
+                # 協作關鍵詞檢查
+                found_keywords = []
+                for keyword in self.collaboration_keywords:
+                    if keyword in text_lower:
+                        found_keywords.append(keyword)
+
+                # 動作詞計數
+                action_count = sum(1 for word in self.action_words if word in text_lower)
+
+                # 檢測邏輯
+                if found_keywords and action_count >= 2:
+                    return True
+
+                # 強協作關鍵詞
+                strong_keywords = ["and then", "然後", "接著", "and also", "並且", "同時"]
+                for keyword in strong_keywords:
+                    if keyword in text_lower:
+                        return True
+
+                # 多動作詞
+                if action_count >= 3:
+                    return True
+
+                return False
+
+        return MVPCollaborationDetector()
+
+    async def execute_collaborative_task(self, text: str, mode: CollaborationMode = CollaborationMode.SEQUENTIAL):
+        """
+        執行協作任務
+
+        Args:
+            text: 用戶輸入文本
+            mode: 協作模式
+
+        Returns:
+            協作執行結果
+        """
+        pretty_print(f"🤝 Detected collaborative task, analyzing...", color="info")
+
+        # 分解任務
+        tasks = self.decompose_collaborative_task(text)
+
+        if not tasks:
+            pretty_print("❌ Failed to decompose collaborative task", color="failure")
+            return None
+
+        pretty_print(f"📋 Decomposed into {len(tasks)} subtasks", color="status")
+
+        # 根據模式執行任務
+        if mode == CollaborationMode.PARALLEL:
+            results = await self.collaborative_agent.execute_parallel(tasks)
+        elif mode == CollaborationMode.PIPELINE:
+            results = await self.collaborative_agent.execute_pipeline(tasks)
+        elif mode == CollaborationMode.COMPETITIVE:
+            # 競爭模式需要特殊處理
+            agent_types = list(set(task.agent_type for task in tasks))
+            if len(agent_types) > 1:
+                results = [await self.collaborative_agent.execute_competitive(text, agent_types)]
+            else:
+                results = await self.collaborative_agent.execute_sequential(tasks)
+        else:  # SEQUENTIAL
+            results = await self.collaborative_agent.execute_sequential(tasks)
+
+        return results
+
+    def decompose_collaborative_task(self, text: str) -> List[AgentTask]:
+        """
+        分解協作任務為子任務
+
+        Args:
+            text: 用戶輸入文本
+
+        Returns:
+            List[AgentTask]: 子任務列表
+        """
+        tasks = []
+
+        # 簡單的任務分解邏輯（可以用 LLM 改進）
+        sentences = text.split('.')
+        task_id = 0
+
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+
+            # 檢測任務類型
+            agent_type = self.detect_task_type(sentence)
+            if agent_type:
+                task = AgentTask(
+                    task_id=f"task_{task_id}",
+                    agent_type=agent_type,
+                    description=sentence,
+                    dependencies=[],
+                    priority=1
+                )
+                tasks.append(task)
+                task_id += 1
+
+        return tasks
+
+    def detect_task_type(self, text: str) -> str:
+        """
+        檢測單個任務的類型
+
+        Args:
+            text: 任務描述文本
+
+        Returns:
+            str: 代理類型
+        """
+        text_lower = text.lower()
+
+        # 編程相關關鍵詞
+        if any(word in text_lower for word in ["write", "code", "script", "program", "debug", "create app"]):
+            return "code"
+
+        # 網頁瀏覽相關關鍵詞
+        if any(word in text_lower for word in ["search", "browse", "web", "find online", "look up"]):
+            return "web"
+
+        # 文件操作相關關鍵詞
+        if any(word in text_lower for word in ["file", "folder", "directory", "save", "organize"]):
+            return "files"
+
+        # 默認返回對話類型
+        return "talk"
 
 if __name__ == "__main__":
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
